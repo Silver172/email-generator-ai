@@ -111,6 +111,17 @@ export const api = {
         updated_fields: Omit<TemplateField, 'id' | 'template_id'>[]
         action: string
       }>(`/api/templates/${id}/chat`, { message, current_fields: currentFields, history }),
+    chatPreview: (
+      rawContent: string,
+      message: string,
+      currentFields: Omit<TemplateField, 'id' | 'template_id'>[],
+      history: ChatMessage[],
+    ) =>
+      post<{
+        message: string
+        updated_fields: Omit<TemplateField, 'id' | 'template_id'>[]
+        action: string
+      }>('/api/templates/chat-preview', { message, raw_content: rawContent, current_fields: currentFields, history }),
   },
 
   email: {

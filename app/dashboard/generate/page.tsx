@@ -58,6 +58,18 @@ async function triggerDownload(id: string, format: 'html' | 'eml' | 'pdf') {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
 }
 
+function downloadBlob(content: string, mimeType: string, filename: string) {
+  const blob = new Blob([content], { type: mimeType })
+  const blobUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = blobUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+}
+
 const ERROR_MSGS: Record<string, string> = {
   llm_rate_limit: 'AI rate limit reached — please wait a moment and try again.',
   llm_not_configured: 'LLM API key not configured in .env',
@@ -81,6 +93,12 @@ function GenerateContent() {
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState<'html' | 'eml' | 'pdf' | null>(null)
 
+  // Edit mode
+  const [editing, setEditing] = useState(false)
+  const [editedContent, setEditedContent] = useState<string | null>(null)
+
+  const displayContent = editedContent ?? result?.generated_content ?? ''
+
   useEffect(() => {
     api.templates.list()
       .then(setTemplates)
@@ -93,7 +111,6 @@ function GenerateContent() {
     api.templates.get(templateId)
       .then(t => {
         setTemplate(t)
-        // Pre-fill inputs with each field's default_value
         const defaults: Record<string, string> = {}
         for (const f of t.fields) {
           if (f.default_value) defaults[f.field_key] = f.default_value
@@ -115,7 +132,6 @@ function GenerateContent() {
     if (!template) return false
     const errs: Record<string, string> = {}
     for (const f of template.fields) {
-      // Use user's input; fall back to default_value — a default counts as "filled"
       const effective = (values[f.field_key] ?? f.default_value ?? '').trim()
       const e = validateValue(effective, f.field_type, f.is_required, f.label, f.validation_rules)
       if (e) errs[f.field_key] = e
@@ -128,8 +144,9 @@ function GenerateContent() {
     if (!template || !validate()) return
     setGenerating(true)
     setResult(null)
+    setEditing(false)
+    setEditedContent(null)
     try {
-      // Send user's value, falling back to default_value if user left the field untouched
       const fieldValues = Object.fromEntries(
         template.fields.map(f => [f.field_key, values[f.field_key] ?? f.default_value ?? ''])
       )
@@ -144,9 +161,15 @@ function GenerateContent() {
     }
   }
 
+  const handleEditToggle = () => {
+    if (!editing) {
+      setEditedContent(result?.generated_content ?? '')
+    }
+    setEditing(v => !v)
+  }
+
   const handleCopy = async () => {
-    if (!result) return
-    await navigator.clipboard.writeText(result.generated_content)
+    await navigator.clipboard.writeText(displayContent)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
     toast.success('Copied to clipboard')
@@ -154,6 +177,28 @@ function GenerateContent() {
 
   const handleDownload = async (format: 'html' | 'eml' | 'pdf') => {
     if (!result) return
+
+    // If the user edited the content, serve HTML and EML from the edited text locally
+    if (editedContent !== null) {
+      const slug = result.id.slice(0, 8)
+      if (format === 'html') {
+        const safe = editedContent
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><pre style="font-family:sans-serif;font-size:14px;white-space:pre-wrap;line-height:1.6">${safe}</pre></body></html>`
+        downloadBlob(html, 'text/html', `email_${slug}_edited.html`)
+        return
+      }
+      if (format === 'eml') {
+        const eml = `MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${editedContent}`
+        downloadBlob(eml, 'message/rfc822', `email_${slug}_edited.eml`)
+        return
+      }
+      // PDF — generated server-side from original content
+      toast.info('PDF is generated from the original AI content. Copy your edits to use them.')
+    }
+
     setDownloading(format)
     try { await triggerDownload(result.id, format) }
     catch { toast.error('Download failed') }
@@ -309,15 +354,45 @@ function GenerateContent() {
             <p className="text-sm text-zinc-500">Generating your email…</p>
           </div>
         ) : result ? (
-          /* Result */
           <>
             {/* Action bar */}
             <div className="shrink-0 flex items-center justify-between gap-4 px-6 py-4 border-b border-white/8">
               <div>
                 <p className="text-sm font-medium text-white">Generated Email</p>
-                <p className="text-xs text-zinc-500 mt-0.5">{formatDateTime(result.created_at)}</p>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  {editing
+                    ? <span className="text-amber-400/80">Editing — changes are local only</span>
+                    : formatDateTime(result.created_at)}
+                </p>
               </div>
               <div className="flex items-center gap-2">
+
+                {/* Edit toggle */}
+                <button
+                  onClick={handleEditToggle}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    editing
+                      ? 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/15'
+                      : 'border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10'
+                  }`}
+                >
+                  {editing ? (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Done
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
+                      </svg>
+                      Edit
+                    </>
+                  )}
+                </button>
+
                 {/* Copy */}
                 <button
                   onClick={handleCopy}
@@ -364,12 +439,22 @@ function GenerateContent() {
               </div>
             </div>
 
-            {/* Email content */}
-            <div className="flex-1 overflow-y-auto p-7">
-              <pre className="text-sm text-zinc-300 whitespace-pre-wrap font-sans leading-relaxed">
-                {result.generated_content}
-              </pre>
-            </div>
+            {/* Email content — view or edit */}
+            {editing ? (
+              <textarea
+                value={editedContent ?? ''}
+                onChange={e => setEditedContent(e.target.value)}
+                spellCheck
+                className="flex-1 w-full px-7 py-6 bg-transparent text-sm text-zinc-200 font-sans leading-relaxed resize-none outline-none border-none focus:ring-0"
+                style={{ minHeight: 0 }}
+              />
+            ) : (
+              <div className="flex-1 overflow-y-auto p-7">
+                <pre className="text-sm text-zinc-300 whitespace-pre-wrap font-sans leading-relaxed">
+                  {displayContent}
+                </pre>
+              </div>
+            )}
           </>
         ) : null}
       </div>

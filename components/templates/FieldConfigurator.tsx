@@ -17,7 +17,10 @@ export interface LocalField {
 }
 
 interface Props {
-  templateId: string
+  // Edit mode: supply templateId. Create mode: supply rawContent + onCreate.
+  templateId?: string
+  rawContent?: string
+  onCreate?: () => Promise<string>
   initialFields: LocalField[]
   initialMessages?: ChatMessage[]
   onSaved: () => void
@@ -27,7 +30,14 @@ const FIELD_TYPES: FieldType[] = ['text', 'email', 'number', 'date', 'phone', 't
 
 const NUMERIC_RULES = new Set<keyof ValidationRules>(['min_length', 'max_length', 'min', 'max'])
 
-export function FieldConfigurator({ templateId, initialFields, initialMessages = [], onSaved }: Props) {
+export function FieldConfigurator({
+  templateId,
+  rawContent,
+  onCreate,
+  initialFields,
+  initialMessages = [],
+  onSaved,
+}: Props) {
   const [fields, setFields] = useState<LocalField[]>(initialFields)
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages)
   const [input, setInput] = useState('')
@@ -35,6 +45,8 @@ export function FieldConfigurator({ templateId, initialFields, initialMessages =
   const [saving, setSaving] = useState(false)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Tracks the template id once created in create mode (avoids duplicate creates on retry)
+  const createdIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -82,7 +94,10 @@ export function FieldConfigurator({ templateId, initialFields, initialMessages =
     setInput('')
     setChatLoading(true)
     try {
-      const res = await api.templates.chat(templateId, text, toApiFields(fields), history)
+      const apiFields = toApiFields(fields)
+      const res = templateId
+        ? await api.templates.chat(templateId, text, apiFields, history)
+        : await api.templates.chatPreview(rawContent ?? '', text, apiFields, history)
       setMessages(h => [...h, { role: 'assistant', content: res.message }])
       if (res.updated_fields?.length) {
         setFields(prev => mergeUpdated(prev, res.updated_fields))
@@ -98,7 +113,14 @@ export function FieldConfigurator({ templateId, initialFields, initialMessages =
     if (!selectedCount) { toast.error('Select at least one field'); return }
     setSaving(true)
     try {
-      await api.templates.saveFields(templateId, toApiFields(fields))
+      // In create mode: create the template first (reuse id on retry if already created)
+      let id = templateId ?? createdIdRef.current
+      if (!id) {
+        if (!onCreate) throw new Error('missing onCreate')
+        id = await onCreate()
+        createdIdRef.current = id
+      }
+      await api.templates.saveFields(id, toApiFields(fields))
       toast.success('Template saved')
       onSaved()
     } catch {
